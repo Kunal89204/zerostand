@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>ZeroStand -- Just-in-Time Zero Standing Privilege Broker</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<style>
+  :root { color-scheme: light; }
+  body { background:#f7f5f0; color:#2b2a27; font-family: ui-sans-serif, system-ui, sans-serif; margin:0; padding:24px; }
+  h1 { font-size:20px; margin:0 0 4px; letter-spacing:-.01em; }
+  .sub { color:#8a8578; font-size:13px; margin-bottom:20px; max-width:780px; }
+  .grid { display:grid; grid-template-columns: 1.3fr 1fr; gap:16px; }
+  .card { background:#ffffff; border:1px solid #e2ddd0; border-radius:12px; padding:18px; margin-bottom:16px; box-shadow: 0 1px 2px rgba(0,0,0,.03); }
+  .card h2 { font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:#8a8578; margin:0 0 14px; font-weight:600; }
+  button { background:#ffffff; color:#0f766e; border:1px solid #0f766e; border-radius:20px; padding:7px 14px; font-size:12px; cursor:pointer; margin:3px; font-weight:600; }
+  button:hover { background:#0f766e; color:#ffffff; }
+  button.danger { color:#b91c1c; border-color:#b91c1c; }
+  button.danger:hover { background:#b91c1c; color:#fff; }
+  .pipeline { display:flex; gap:10px; align-items:stretch; flex-wrap:wrap; }
+  .stage { flex:1; min-width:160px; border-radius:10px; padding:12px; border:1px solid #e2ddd0; background:#fbfaf7; }
+  .stage h3 { margin:0 0 6px; font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:#8a8578; }
+  .pill { display:inline-block; padding:3px 10px; border-radius:12px; font-size:11px; font-weight:700; }
+  .pill-APPROVE, .pill-ALLOW { background:#dcfce7; color:#15803d; }
+  .pill-STEP_UP, .pill-MONITOR { background:#fef3c7; color:#b45309; }
+  .pill-DENY, .pill-REVOKE, .pill-false { background:#fee2e2; color:#b91c1c; }
+  .pill-true { background:#dcfce7; color:#15803d; }
+  .reason { font-size:12px; color:#555; margin-top:6px; line-height:1.4; }
+  table { width:100%; border-collapse:collapse; font-size:12px; }
+  th,td { text-align:left; padding:6px 8px; border-bottom:1px solid #eee; }
+  .token-row { display:flex; justify-content:space-between; align-items:center; padding:6px 0; border-bottom:1px solid #eee; font-size:12px; }
+  .countdown { font-variant-numeric: tabular-nums; font-weight:700; color:#0f766e; }
+  .status-active .countdown { color:#0f766e; }
+  .status-consumed .countdown, .status-expired .countdown, .status-revoked .countdown { color:#b91c1c; }
+  .badge { display:inline-block; padding:2px 8px; border-radius:12px; font-size:11px; background:#0f766e14; color:#0f766e; }
+  .ok { color:#15803d; } .bad { color:#b91c1c; }
+  .metric-row { display:flex; gap:20px; }
+  .metric { font-size:22px; font-weight:700; }
+  .metric-label { font-size:11px; color:#8a8578; text-transform:uppercase; }
+  #radar { max-height:260px; }
+</style>
+</head>
+<body>
+
+<h1>ZeroStand</h1>
+<div class="sub">Just-in-time, zero-standing-privilege access broker. No long-lived admin credential ever exists to be misused -- every action is a short-lived, cryptographically-bound permission slip, checked against the requestor's peer group before it's ever issued, and against the declared task while it's being used.</div>
+
+<div class="grid">
+  <div>
+    <div class="card">
+      <h2>Request an action (scenario injector)</h2>
+      <button onclick="runScenario('normal')">Normal request</button>
+      <button class="danger" onclick="runScenario('excessive_scope_request')">Excessive scope request</button>
+      <button class="danger" onclick="runScenario('peer_drift_request')">Peer-drift request</button>
+      <button class="danger" onclick="runScenario('conformance_violation')">Conformance violation</button>
+      <button class="danger" onclick="runScenario('token_replay')">Replay a used token</button>
+    </div>
+
+    <div class="card">
+      <h2>Request lifecycle -- latest run</h2>
+      <div id="pipeline" class="pipeline">
+        <div class="stage"><h3>1. Request</h3><div class="sub">Run a scenario to see it flow through the pipeline.</div></div>
+        <div class="stage"><h3>2. Token</h3></div>
+        <div class="stage"><h3>3. Execution</h3></div>
+        <div class="stage"><h3>4. Ledger</h3></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Recent requests</h2>
+      <table id="historyTable">
+        <thead><tr><th>Case</th><th>User</th><th>Action</th><th>Request</th><th>Token/Exec</th><th>Ground truth</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div>
+    <div class="card">
+      <h2>Request-stage model (held-out test set)</h2>
+      <div id="metrics">loading...</div>
+    </div>
+
+    <div class="card">
+      <h2>Behavior: you vs. your peers</h2>
+      <canvas id="radar"></canvas>
+      <div class="sub" style="margin-top:8px;">Peer-drift is exactly the case where the blue (current) line tracks close to green (your own recent baseline) but strays far from amber (your role's peer baseline) -- consistent with yourself, inconsistent with your peers.</div>
+    </div>
+
+    <div class="card">
+      <h2>Active ephemeral tokens</h2>
+      <div id="tokens"></div>
+    </div>
+
+    <div class="card">
+      <h2>PQC-signed decision ledger</h2>
+      <button onclick="verifyChain()">Verify chain</button>
+      <button class="danger" onclick="tamperChain()">Tamper record #2 (demo)</button>
+      <div id="verifyResult" style="margin-top:8px; font-size:12px;"></div>
+      <div id="auditLog" style="max-height:180px; overflow:auto; margin-top:8px; font-size:12px;"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+let radarChart;
+
+function initRadar() {
+  const ctx = document.getElementById('radar');
+  radarChart = new Chart(ctx, {
+    type: 'radar',
+    data: { labels: ["read_only","config","data_move","priv_esc","destructive","log_tamper","vault_access"],
+      datasets: [
+        { label: 'current request', data: [0,0,0,0,0,0,0], borderColor: '#0f766e', backgroundColor: '#0f766e22' },
+        { label: 'your recent baseline', data: [0,0,0,0,0,0,0], borderColor: '#15803d', backgroundColor: '#15803d11' },
+        { label: 'peer group baseline', data: [0,0,0,0,0,0,0], borderColor: '#b45309', backgroundColor: '#b4530911' },
+      ] },
+    options: { scales: { r: { min:0, max:0.9, ticks: { display:false } } }, plugins: { legend: { position:'bottom', labels:{ font:{size:10} } } } }
+  });
+}
+
+function updateRadar(vectors) {
+  const order = ["read_only","config","data_move","priv_esc","destructive","log_tamper","vault_access"];
+  const toArr = v => v ? order.map(k => v[k] || 0) : order.map(_=>0);
+  radarChart.data.datasets[0].data = toArr(vectors.current);
+  radarChart.data.datasets[1].data = toArr(vectors.own_recent);
+  radarChart.data.datasets[2].data = toArr(vectors.peer_centroid);
+  radarChart.update();
+}
+
+function stageHTML(title, pill, reasonHtml) {
+  return `<div class="stage"><h3>${title}</h3>${pill ? `<span class="pill pill-${pill}">${pill}</span>` : '<span class="sub">--</span>'}${reasonHtml || ''}</div>`;
+}
+
+function renderPipeline(trace) {
+  const req = trace.request;
+  let html = stageHTML('1. Request', req.decision, `<div class="reason">${req.reason}<br>risk=${req.risk_score}</div>`);
+
+  if (!trace.token) {
+    html += stageHTML('2. Token', null, '<div class="sub">No token issued.</div>');
+    html += stageHTML('3. Execution', null, '<div class="sub">N/A</div>');
+  } else {
+    html += stageHTML('2. Token', 'APPROVE', `<div class="reason">jti ${trace.token.jti.slice(0,10)}... issued, ${trace.token.ttl_seconds}s TTL<br>ML-KEM-768 + ML-DSA-65</div>`);
+    if (trace.execution) {
+      html += stageHTML('3. Execution', trace.execution.decision, `<div class="reason">${trace.execution.reason}</div>`);
+    } else {
+      html += stageHTML('3. Execution', null, '<div class="sub">Pending.</div>');
+    }
+  }
+  html += stageHTML('4. Ledger', 'true', '<div class="reason">Hash-chained + ML-DSA-65 signed.</div>');
+  document.getElementById('pipeline').innerHTML = html;
+}
+
+function renderReplay(result) {
+  document.getElementById('pipeline').innerHTML =
+    stageHTML('Token replay attempt', String(result.valid), `<div class="reason">jti ${result.jti.slice(0,10)}...<br>${result.reason}</div>`) +
+    `<div class="stage"><h3>Layer</h3><div class="reason">Rejected at the cryptographic/protocol layer (single-use nonce check) -- independent of any ML model.</div></div>`;
+}
+
+function addHistoryRow(trace) {
+  if (trace.case_type === 'token_replay') return;
+  const tbody = document.querySelector('#historyTable tbody');
+  const tr = document.createElement('tr');
+  const execCell = trace.execution ? `<span class="pill pill-${trace.execution.decision}">${trace.execution.decision}</span>` : '--';
+  tr.innerHTML = `<td>${trace.case_id}</td><td>${trace.user_id}</td><td>${trace.action_type}</td>
+    <td><span class="pill pill-${trace.request.decision}">${trace.request.decision}</span></td>
+    <td>${execCell}</td><td>${trace.ground_truth}${trace.case_type!=='normal' ? ' ('+trace.case_type+')' : ''}</td>`;
+  tbody.prepend(tr);
+}
+
+async function runScenario(name) {
+  const res = await fetch(`/api/demo/run?scenario=${name}`, { method: 'POST' });
+  const data = await res.json();
+  if (name === 'token_replay') { renderReplay(data); await refreshAll(); return; }
+  renderPipeline(data);
+  updateRadar(data.vectors);
+  addHistoryRow(data);
+  await refreshAll();
+}
+
+async function loadMetrics() {
+  const res = await fetch('/api/metrics');
+  const m = await res.json();
+  document.getElementById('metrics').innerHTML =
+    `<div class="metric-row">
+       <div><div class="metric">${(m.precision*100).toFixed(1)}%</div><div class="metric-label">precision</div></div>
+       <div><div class="metric">${(m.recall*100).toFixed(1)}%</div><div class="metric-label">recall</div></div>
+     </div>
+     <div class="sub">TP ${m.tp} · FP ${m.fp} · FN ${m.fn} · TN ${m.tn} (n=${m.test_size} held-out requests)</div>`;
+}
+
+async function loadTokens() {
+  const res = await fetch('/api/tokens');
+  const tokens = await res.json();
+  document.getElementById('tokens').innerHTML = tokens.slice(-8).reverse().map(t =>
+    `<div class="token-row status-${t.status}"><span>${t.jti.slice(0,8)}... <span class="badge">${t.action_type}</span></span>
+     <span class="countdown">${t.status === 'active' ? t.seconds_remaining + 's' : t.status}</span></div>`).join('') || '<div class="sub">No tokens issued yet.</div>';
+}
+
+async function verifyChain() {
+  const res = await fetch('/api/audit/verify');
+  const r = await res.json();
+  document.getElementById('verifyResult').innerHTML = r.valid
+    ? `<span class="ok">VALID</span> -- ${r.length} records, ${r.algorithm}`
+    : `<span class="bad">TAMPER DETECTED</span> at record #${r.broken_at}: ${r.reason}`;
+  loadAudit();
+}
+
+async function tamperChain() {
+  await fetch('/api/audit/tamper/2', { method: 'POST' });
+  verifyChain();
+}
+
+async function loadAudit() {
+  const res = await fetch('/api/audit');
+  const log = await res.json();
+  document.getElementById('auditLog').innerHTML = log.slice(-10).reverse().map(e =>
+    `<div>#${e.seq} <span class="badge">${e.event.type}</span> hash=${e.record_hash.slice(0,12)}...</div>`).join('');
+}
+
+async function refreshAll() {
+  await Promise.all([loadMetrics(), loadTokens(), loadAudit()]);
+}
+
+initRadar();
+refreshAll();
+setInterval(loadTokens, 2000);
+</script>
+</body>
+</html>
